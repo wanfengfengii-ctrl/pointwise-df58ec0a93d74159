@@ -45,6 +45,14 @@ Warehouse(root) 自动创建目录和版本为 1 的 SQLite 目录库。一个�
 
 接纳实现见 warehouse/intake.py；排序见 warehouse/sort.py；窗口见 warehouse/window.py；目录事务与读取见 warehouse/catalog.py；公开装配在 warehouse/__init__.py。
 
+## 派生更正批次
+
+在固定历史发布上接纳少量读数更正并做局部窗口刷新，避免重加工无关分区：
+
+* `derive(child_id, parent_publication_id, changes)` 把更正批次绑定到一个普通批次的确切成功发布（允许不是当前 head），流式校验每个 before 旧像（按同一父输入核对）、存续行保序、新行按更正次序追加，返回 child_id、parent_publication_id、radius、digest、rows。不加工窗口；重试按完整规范更正序列幂等，冲突抛 BatchConflict。
+* `refresh(child_id, memory_budget, event_port=None)` 沿用绑定 radius 与闭区间 RANGE / EXCLUDE TIES：仅对更正波及的集合 A 重新求值，A 外逐行复用绑定父发布结果；完整候选、head 与回执原子发布，失败保全旧成果且可重试。回执比 compute 多 parent_publication_id；`refresh_work`（evaluate/sort/reuse）与 `refresh_prepared`（copied_rows/indexed_rows）事件提供可核对的局部工作审计。
+* compute 只服务普通批次，refresh 只服务派生批次，互调抛 ValidationError；ingest 不覆盖派生批次。完整契约、手算样例、不变量与交接说明见 DERIVED.md、HANDOFF.md，联合核账夹具为 `python3 -B derived_check.py verify|demo`。
+
 ## 外存与预算
 
 输入键和金额在磁盘中以规范带符号十六进制 TEXT 保存，绕过 SQLite 64 位整数和 Python 十进制字符串位数上限。数值索引使用精确 HEXINT 比较；绝不使用 SQLite SUM 或浮点转换。

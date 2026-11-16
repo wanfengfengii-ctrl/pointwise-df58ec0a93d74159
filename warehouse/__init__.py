@@ -2,6 +2,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from .catalog import Catalog
+from .derived import derive, refresh as refresh_derived
 from .intake import ingest, iter_input
 from .model import (integer, ValidationError, WarehouseError, BatchConflict,
                     NotFound, NotPublished)
@@ -19,7 +20,16 @@ class Warehouse:
         self.catalog = Catalog(self.root / 'warehouse.sqlite')
 
     def ingest(self, batch_id, rows):
+        # Normal admission must never overwrite a derived child batch.
+        if self.catalog.derivation(batch_id) is not None:
+            raise BatchConflict(batch_id)
         return ingest(self.catalog, batch_id, rows)
+
+    def derive(self, child_id, parent_publication_id, changes):
+        return derive(self.catalog, child_id, parent_publication_id, changes)
+
+    def refresh(self, child_id, memory_budget, event_port=None):
+        return refresh_derived(self, child_id, memory_budget, event_port)
 
     def status(self, batch_id):
         return self.catalog.status(batch_id)
@@ -37,6 +47,8 @@ class Warehouse:
         integer(fan_in, 'fan_in', 2, 32)
         integer(delivery_rows, 'delivery_rows', 1, 10000)
         _, count, maximum, _ = self.catalog.batch(batch_id)
+        if self.catalog.derivation(batch_id) is not None:
+            raise ValidationError('compute requires a normal batch; use refresh for derived batches')
         required = max(1024, (fan_in + 4) * maximum)
         if memory_budget < required:
             raise ValidationError('memory_budget below required minimum ' + str(required))

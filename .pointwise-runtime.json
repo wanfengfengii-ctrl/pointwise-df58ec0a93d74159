@@ -5,18 +5,13 @@
   "verify": [
     "python3",
     "-B",
-    "-m",
-    "unittest",
-    "discover",
-    "-s",
-    "tests",
-    "-v"
+    "derived_check.py",
+    "verify"
   ],
   "demo": [
     "python3",
     "-B",
-    "-m",
-    "warehouse",
+    "derived_check.py",
     "demo"
   ]
 }

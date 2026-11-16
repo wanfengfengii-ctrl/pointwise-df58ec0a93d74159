@@ -22,7 +22,32 @@ CREATE TABLE outputs(
  publication_id INTEGER NOT NULL REFERENCES publications(publication_id),
  seq INTEGER NOT NULL, row_id TEXT NOT NULL, total TEXT NOT NULL,
  PRIMARY KEY(publication_id,seq));
+CREATE TABLE derivations(
+ child_id TEXT PRIMARY KEY REFERENCES batches(batch_id),
+ parent_publication_id INTEGER NOT NULL, radius TEXT NOT NULL);
+CREATE TABLE derived_changes(
+ child_id TEXT NOT NULL REFERENCES batches(batch_id), change_seq INTEGER NOT NULL,
+ row_id TEXT NOT NULL,
+ before_part TEXT, before_k TEXT, before_amount TEXT,
+ after_part TEXT, after_k TEXT, after_amount TEXT,
+ PRIMARY KEY(child_id,change_seq));
 PRAGMA user_version=1;
+"""
+
+# Derived-batch tables added for the refresh contract. The catalog on-disk
+# layout version stays 1; DDL is idempotent so older catalogs gain the objects
+# on first reopen without touching existing data. The reusable parent range
+# index is deliberately absent here: refresh builds it on first use.
+DERIVED_DDL = """
+CREATE TABLE IF NOT EXISTS derivations(
+ child_id TEXT PRIMARY KEY REFERENCES batches(batch_id),
+ parent_publication_id INTEGER NOT NULL, radius TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS derived_changes(
+ child_id TEXT NOT NULL REFERENCES batches(batch_id), change_seq INTEGER NOT NULL,
+ row_id TEXT NOT NULL,
+ before_part TEXT, before_k TEXT, before_amount TEXT,
+ after_part TEXT, after_k TEXT, after_amount TEXT,
+ PRIMARY KEY(child_id,change_seq));
 """
 
 
@@ -41,6 +66,27 @@ class Catalog:
         elif version != 1:
             self.db.close()
             raise ValueError('unsupported catalog version')
+        # Idempotent upgrade for catalogs created before derived batches.
+        self.db.executescript(DERIVED_DDL)
+
+    def derivation(self, child_id):
+        row = self.db.execute(
+            'SELECT parent_publication_id,radius FROM derivations WHERE child_id=?',
+            (child_id,)).fetchone()
+        if row is None:
+            return None
+        return {'parent_publication_id': row[0], 'radius': int(row[1], 16)}
+
+    def is_derived(self, batch_id):
+        return self.db.execute(
+            'SELECT 1 FROM derivations WHERE child_id=?', (batch_id,)).fetchone() is not None
+
+    def parent_publication(self, publication_id):
+        return self.db.execute(
+            'SELECT p.batch_id,p.radius FROM publications p '
+            'WHERE p.publication_id=? AND NOT EXISTS('
+            'SELECT 1 FROM derivations d WHERE d.child_id=p.batch_id)',
+            (publication_id,)).fetchone()
 
     def batch(self, batch_id):
         name(batch_id, 'batch_id', 128)
@@ -62,7 +108,7 @@ class Catalog:
             "WHERE attempt_id=?",
             (type(error).__name__, str(error), json.dumps(stats, sort_keys=True), attempt_id))
 
-    def publish(self, batch_id, radius, attempt_id, candidate, stats, port, release):
+    def publish(self, batch_id, radius, attempt_id, candidate, stats, port, release, extra=None):
         expected = self.batch(batch_id)[1]
         db = self.db
         db.execute('BEGIN IMMEDIATE')
@@ -96,9 +142,12 @@ class Catalog:
                 "WHERE attempt_id=?",
                 (publication_id, json.dumps(stats, sort_keys=True), attempt_id))
             db.commit()
-            return {'batch_id': batch_id, 'publication_id': publication_id,
-                    'attempt_id': attempt_id, 'radius': radius, 'rows': count,
-                    'stats': dict(stats)}
+            receipt = {'batch_id': batch_id, 'publication_id': publication_id,
+                       'attempt_id': attempt_id, 'radius': radius, 'rows': count,
+                       'stats': dict(stats)}
+            if extra:
+                receipt.update(extra)
+            return receipt
         except BaseException:
             db.rollback()
             raise
@@ -139,9 +188,14 @@ class Catalog:
                 (head,)).fetchone()
             publication = {'publication_id': head, 'radius': int(radius, 16),
                            'rows': n, 'stats': json.loads(stats)}
-        return {'batch_id': batch_id, 'rows': n, 'digest': digest,
-                'max_payload': maximum, 'publication_id': head,
-                'publication': publication, 'latest_attempt': latest}
+        result = {'batch_id': batch_id, 'rows': n, 'digest': digest,
+                  'max_payload': maximum, 'publication_id': head,
+                  'publication': publication, 'latest_attempt': latest}
+        binding = self.derivation(batch_id)
+        if binding is not None:
+            result['parent_publication_id'] = binding['parent_publication_id']
+            result['radius'] = binding['radius']
+        return result
 
     def close(self):
         self.db.close()
