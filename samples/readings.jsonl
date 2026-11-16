@@ -1,0 +1,5 @@
+{"row_id":"m1","partition":"north","order_key":10,"amount":3}
+{"row_id":"m2","partition":"north","order_key":9,"amount":5}
+{"row_id":"m3","partition":"north","order_key":10,"amount":8}
+{"row_id":"m4","partition":"south","order_key":10,"amount":-4}
+{"row_id":"m5","partition":"north","order_key":11,"amount":5}
